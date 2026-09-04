@@ -34,7 +34,7 @@
 cmake --preset default
 cmake --build --preset default
 
-.uild\defaultin\cpp_template.exe --name world --repeat 3 --json
+.\build\default\Release\cpp_template.exe --name world --repeat 3 --json
 ```
 
 ### Linux
