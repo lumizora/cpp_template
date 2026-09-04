@@ -1,0 +1,6 @@
+build/
+.deps-cache/
+.deps-override/
+CMakeUserPresets.json
+*.local/
+node_modules/

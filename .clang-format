@@ -1,0 +1,55 @@
+# C/C++ 格式唯一权威。
+# 项目约定：C++17 / 4 空格 / 120 列 / 指针和引用左对齐。
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++17
+
+# ---- 缩进与行宽 ---------------------------------------------------------
+IndentWidth: 4
+ContinuationIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+
+# ---- 指针与引用 ---------------------------------------------------------
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+
+# ---- 命名空间与访问修饰符 ---------------------------------------------
+NamespaceIndentation: None
+AccessModifierOffset: -4
+
+# ---- 短语句 / 短函数 ----------------------------------------------------
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Inline
+
+# ---- 大括号 / 参数 / 模板 ----------------------------------------------
+BreakBeforeBraces: Attach
+BreakTemplateDeclarations: Yes
+BinPackArguments: false
+BinPackParameters: false
+IndentCaseLabels: true
+
+# ---- include ------------------------------------------------------------
+# 不维护具体第三方库名单，避免格式规则与依赖清单耦合。
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"'
+    Priority: 1
+  - Regex: "^<"
+    Priority: 2
+  - Regex: ".*"
+    Priority: 3
+
+# ---- 其它 ---------------------------------------------------------------
+SortUsingDeclarations: true
+SpacesBeforeTrailingComments: 2
+MaxEmptyLinesToKeep: 1
+InsertNewlineAtEOF: true
+FixNamespaceComments: true
+ReflowComments: false

@@ -1,0 +1,64 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "MSVC x64 (VS Generator)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "offline",
+      "displayName": "Offline (pre-fetched cache)",
+      "inherits": "default",
+      "cacheVariables": {
+        "DEPS_OFFLINE": "ON"
+      }
+    },
+    {
+      "name": "ci",
+      "displayName": "CI (no local overrides)",
+      "inherits": "default",
+      "cacheVariables": {
+        "DEPS_ALLOW_OVERRIDE": "OFF"
+      }
+    },
+    {
+      "name": "test",
+      "displayName": "Tests (BUILD_TESTING=ON)",
+      "inherits": "default",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "bench",
+      "displayName": "Benchmarks (BUILD_BENCHMARKING=ON)",
+      "inherits": "default",
+      "cacheVariables": {
+        "BUILD_BENCHMARKING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default", "configurePreset": "default", "configuration": "Release" },
+    { "name": "debug", "configurePreset": "default", "configuration": "Debug" },
+    { "name": "test", "configurePreset": "test", "configuration": "Release" },
+    { "name": "bench", "configurePreset": "bench", "configuration": "Release" }
+  ],
+  "testPresets": [
+    {
+      "name": "test",
+      "configurePreset": "test",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

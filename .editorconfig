@@ -1,0 +1,37 @@
+# EditorConfig: https://editorconfig.org
+# 只负责编辑器层面的基础文件规范；复杂语言格式交给专用 formatter。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+# C / C++：完整格式以 .clang-format 为唯一权威。
+[*.{c,cc,cpp,cxx,h,hh,hpp,hxx,inl}]
+indent_size = 4
+tab_width = 4
+max_line_length = 120
+
+# CMake：仅给编辑器提供输入提示；不由 editorconfig-checker 校验缩进倍数。
+[*.cmake]
+indent_size = 2
+tab_width = 2
+
+[CMakeLists.txt]
+indent_size = 2
+tab_width = 2
+
+# JSON / YAML
+[*.{json,yaml,yml}]
+indent_size = 2
+
+# Python
+[*.py]
+indent_size = 4
+
+# Markdown 中行尾两个空格可表示 hard line break，因此不要由编辑器自动删除。
+[*.md]
+trim_trailing_whitespace = false

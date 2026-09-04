@@ -1,0 +1,37 @@
+# clang-tidy 只负责静态分析，不承担格式化职责。
+# 需要 compile_commands.json；建议在 CI 或显式质量检查中运行。
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-use-after-move,
+  bugprone-dangling-handle,
+  bugprone-infinite-loop,
+  bugprone-macro-parentheses,
+  bugprone-multiple-statement-macro,
+  bugprone-suspicious-memset-usage,
+  bugprone-virtual-near-miss,
+  performance-for-range-copy,
+  performance-move-const-arg,
+  performance-no-automatic-move,
+  performance-unnecessary-copy-initialization,
+  performance-unnecessary-value-param,
+  portability-simd-intrinsics,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+  readability-container-size-empty,
+  readability-redundant-smartptr-get
+
+# 项目目录结构尚未在当前材料中完整确认，因此先采用排除式过滤。
+# 当 src/include 等源码边界明确后，建议改成正向 HeaderFilterRegex 白名单。
+HeaderFilterRegex: '^(?!.*([/\\](build|_deps|third_party|vendor|external|vcpkg_installed)[/\\])).*$'
+
+CheckOptions:
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: 'std::string_view'
+
+# 选中的规则在 CI 中应视为失败；如果旧代码存量较大，可迁移期临时置空。
+WarningsAsErrors: '*'
+
+# 与 clang-format 完全解耦。
+FormatStyle: none

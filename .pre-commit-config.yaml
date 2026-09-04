@@ -1,0 +1,40 @@
+# pre-commit 只做快速、确定性的本地检查与自动修复。
+# 安装：pip install pre-commit && pre-commit install
+# 全量执行：pre-commit run --all-files
+minimum_pre_commit_version: "3.2.0"
+
+repos:
+  # ---- 通用文件卫生 -----------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown 保留两个尾空格作为 hard line break。
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: fix-byte-order-marker
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-symlinks
+      - id: check-yaml
+      - id: check-json
+
+  # ---- C/C++ 自动格式化 -------------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v22.1.8
+    hooks:
+      - id: clang-format
+        types_or: [c, c++]
+
+  # ---- 项目自定义快速检查 -----------------------------------------------
+  - repo: local
+    hooks:
+      - id: check-deps-pinned
+        name: check deps pinned (cmake/Dependencies.cmake)
+        entry: python scripts/check_deps_pinned.py
+        language: system
+        files: ^cmake/Dependencies\.cmake$
+        pass_filenames: false
