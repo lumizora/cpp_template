@@ -1,0 +1,101 @@
+# Application distribution only. SDK export is a separate consumer requirement.
+if(DEPS_ALLOW_OVERRIDE OR DEPS_PREFER_PACKAGE OR CPP_TEMPLATE_SANITIZERS)
+  message(FATAL_ERROR "Packaging requires overrides/packages/sanitizers disabled; use the release preset")
+endif()
+include(GNUInstallDirs)
+install(CODE [[
+  if(NOT CMAKE_INSTALL_CONFIG_NAME STREQUAL "Release")
+    message(FATAL_ERROR "Application packages must use the Release configuration")
+  endif()
+]] COMPONENT Runtime)
+install(TARGETS cpp_template RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT Runtime)
+if(APPLE)
+  set_property(TARGET cpp_template PROPERTY INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+elseif(UNIX)
+  set_property(TARGET cpp_template PROPERTY INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+endif()
+
+# Source-built dependencies may be shared when BUILD_SHARED_LIBS is enabled.
+foreach(_target fmt spdlog glfw)
+  if(TARGET ${_target})
+    get_target_property(_type ${_target} TYPE)
+    if(_type STREQUAL "SHARED_LIBRARY")
+      # Upstream SDK installation is disabled; this component ships runtime files only.
+      set_property(TARGET ${_target} PROPERTY PUBLIC_HEADER "")
+      install(TARGETS ${_target} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT Runtime
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Runtime)
+      if(APPLE)
+        set_property(TARGET ${_target} PROPERTY INSTALL_RPATH "@loader_path")
+      elseif(UNIX)
+        set_property(TARGET ${_target} PROPERTY INSTALL_RPATH "$ORIGIN")
+      endif()
+    endif()
+  endif()
+endforeach()
+if(CPP_TEMPLATE_WITH_GLFW)
+  get_target_property(_imported glfw::glfw IMPORTED)
+  if(_imported)
+    install(IMPORTED_RUNTIME_ARTIFACTS glfw::glfw
+      RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT Runtime
+      LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Runtime)
+  endif()
+endif()
+if(MSVC)
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION "${CMAKE_INSTALL_BINDIR}")
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT Runtime)
+  include(InstallRequiredSystemLibraries)
+endif()
+
+set(_inventory "[]")
+set(_index 0)
+set(_dependencies fmt nlohmann_json spdlog cli11 stb)
+if(CPP_TEMPLATE_WITH_GLFW)
+  list(APPEND _dependencies glfw)
+endif()
+foreach(_name IN LISTS _dependencies)
+  get_property(_source GLOBAL PROPERTY "DEPS_${_name}_SOURCE")
+  if(NOT IS_DIRECTORY "${_source}")
+    message(FATAL_ERROR "Missing source provenance for ${_name}")
+  endif()
+  file(GLOB _licenses "${_source}/LICENSE" "${_source}/LICENSE.*" "${_source}/COPYING*")
+  if(NOT _licenses)
+    message(FATAL_ERROR "No upstream license found for ${_name}")
+  endif()
+  install(FILES ${_licenses} DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/cpp_template/${_name}" COMPONENT Runtime)
+  string(JSON _entry SET "{}" name "\"${_name}\"")
+  foreach(_field VERSION URL URL_HASH GIT_REPOSITORY GIT_TAG)
+    get_property(_value GLOBAL PROPERTY "DEPS_${_name}_${_field}")
+    # CMake reports invalid JSON rather than writing malformed provenance.
+    string(REPLACE "\\" "\\\\" _value "${_value}")
+    string(REPLACE "\"" "\\\"" _value "${_value}")
+    string(JSON _entry SET "${_entry}" "${_field}" "\"${_value}\"")
+  endforeach()
+  string(JSON _inventory SET "${_inventory}" ${_index} "${_entry}")
+  math(EXPR _index "${_index} + 1")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json" "${_inventory}\n")
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/metadata/$<CONFIG>/build-info.json"
+  CONTENT "{\n  \"project\": \"cpp-template\",\n  \"version\": \"${PROJECT_VERSION}\",\n  \"configuration\": \"$<CONFIG>\",\n  \"platform\": \"${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}\",\n  \"compiler\": \"${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}\",\n  \"cmake\": \"${CMAKE_VERSION}\"\n}\n")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
+  "${CMAKE_CURRENT_BINARY_DIR}/metadata/$<CONFIG>/build-info.json"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/cpp_template" COMPONENT Runtime)
+install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/cpp_template" COMPONENT Runtime)
+
+set(CPACK_PACKAGE_NAME cpp_template)
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME "cpp_template-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_GENERATOR "TGZ;ZIP")
+set(CPACK_COMPONENTS_ALL Runtime)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+include(CPack)
+
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME installed_application
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/integration/test_install.py"
+      "${CMAKE_BINARY_DIR}" "${PROJECT_VERSION}" "${CMAKE_COMMAND}" "${CMAKE_CPACK_COMMAND}"
+    CONFIGURATIONS Release)
+  set_tests_properties(installed_application PROPERTIES TIMEOUT 120)
+endif()

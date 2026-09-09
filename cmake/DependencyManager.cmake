@@ -1,214 +1,198 @@
-# ---------------------------------------------------------------------------
-# 纯 CMake 依赖管理引擎
-#
-# 设计目标:可复现 / 可离线 / ABI 一致 / 传递依赖去重 / 本地可覆盖
-# 依赖 CMake >= 3.25 (OVERRIDE_FIND_PACKAGE 3.24, SYSTEM 头 3.25)
-# ---------------------------------------------------------------------------
+# Pure-CMake dependency helpers. Downloaded sources are immutable cache entries;
+# generated files, objects and FetchContent subbuilds always belong to this build.
 include_guard(GLOBAL)
-
-# 统一源码缓存目录:必须在 include(FetchContent) 之前以 CACHE 变量设置。
-# 原因:FetchContent.cmake 在模块加载时(L1927)会执行
-#   set(FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/_deps" CACHE PATH ...)
-# 若在此之前已存在同名 cache 变量,该行是 no-op;否则它写入默认值,
-# 此后再设普通变量无法覆盖。放这里才生效,且可被 -D 覆盖。
-if(NOT DEFINED FETCHCONTENT_BASE_DIR)
-  set(FETCHCONTENT_BASE_DIR "${CMAKE_SOURCE_DIR}/.deps-cache" CACHE PATH
-      "FetchContent source cache (shared across builds)")
-endif()
-
+set(FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/_deps")
 include(FetchContent)
-
-# ---- 全局策略 -------------------------------------------------------------
-# CMP0077 NEW:被拉取库的 option() 遵守我们传入的普通变量,而非污染 cache。
-# 这是干净配置第三方库的关键。
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 
-option(DEPS_OFFLINE        "使用已预取的缓存,禁止联网"            OFF)
-option(DEPS_ALLOW_OVERRIDE "允许 .deps-override/<name> 本地覆盖"  ON)
-option(DEPS_PREFER_PACKAGE "优先用系统/已安装包,找不到再拉源码"   OFF)
+set(DEPS_CACHE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.deps-cache" CACHE PATH "Shared dependency source cache")
+option(DEPS_OFFLINE "Use matching cached dependencies only" OFF)
+option(DEPS_ALLOW_OVERRIDE "Allow local dependency overrides" ON)
+option(DEPS_PREFER_PACKAGE "Prefer installed packages in development builds" OFF)
 
-# 离线模式:FetchContent 不联网,源码必须已存在于缓存中。
-if(DEPS_OFFLINE)
-  set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "" FORCE)
-endif()
-
-# ---- ABI 一致性:让被拉取库与主项目共用同一 CRT(仅 MSVC) -------------------
-# 必须用动态 CRT(/MD,MultiThreaded*DLL):多个静态库 + /MT 会让每个库各自
-# 链接一份 CRT,stdio 缓冲区相互隔离 -- fmt::print 写入 fmt 私有 stdout
-# 缓冲,进程退出只刷新主程序的缓冲,输出被静默丢弃。/MD 共享单一 CRT 实例。
-# 用户可在 include 之前自行覆盖。
+# Keep one CRT policy across our targets and source-built dependencies.
+# DLL boundaries still require compatible ownership and ABI conventions.
 if(MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
-  set(CMAKE_MSVC_RUNTIME_LIBRARY
-      "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
-# ---------------------------------------------------------------------------
-# add_dependency(name
-#   VERSION <ver>
-#   [GIT_REPOSITORY <url> GIT_TAG <sha-or-tag>]
-#   [URL <url> URL_HASH <sha256>]
-#   [PREFER_PACKAGE]          # 先 find_package,失败再拉源码
-#   [EXPOSE_FIND_PACKAGE]     # 声明 OVERRIDE,供其它依赖的 find_package 命中
-#   [SYSTEM]                  # 头文件标记为 SYSTEM,抑制告警(CMake 3.25+)
-#   [GIT_SHALLOW]             # 浅克隆(--depth 1),适合 tag;大幅减小大仓库下载
-#   [CMAKE_ARGS arg ...]      # 转发给子项目的配置参数
-#   [COMPONENTS c ...])       # find_package 时的组件
-# ---------------------------------------------------------------------------
-function(add_dependency name)
-  set(options PREFER_PACKAGE EXPOSE_FIND_PACKAGE SYSTEM GIT_SHALLOW)
-  set(oneValueArgs VERSION GIT_REPOSITORY GIT_TAG URL URL_HASH)
-  set(multiValueArgs CMAKE_ARGS COMPONENTS)
-  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+function(_deps_check_arguments name)
+  if(NOT name MATCHES "^[A-Za-z][A-Za-z0-9_]*$")
+    message(FATAL_ERROR "[deps] Invalid dependency name: ${name}")
+  endif()
+  if(ARG_UNPARSED_ARGUMENTS OR ARG_KEYWORDS_MISSING_VALUES)
+    message(FATAL_ERROR "[deps] ${name}: unknown arguments or missing values: ${ARG_UNPARSED_ARGUMENTS};${ARG_KEYWORDS_MISSING_VALUES}")
+  endif()
+endfunction()
 
-  string(TOUPPER "${name}" _UP)
+function(_deps_check_hash name hash)
+  string(LENGTH "${hash}" _length)
+  if(NOT _length EQUAL 71 OR NOT hash MATCHES "^SHA256=[0-9a-fA-F]+$")
+    message(FATAL_ERROR "[deps] ${name}: URL_HASH must be SHA256=<64 hex digits>")
+  endif()
+endfunction()
 
-  # 1) 本地覆盖:开发时把依赖 checkout 到 .deps-override/<name> 即生效
-  if(DEPS_ALLOW_OVERRIDE)
-    set(_ov "$ENV{DEPS_OVERRIDE_DIR}")
-    if(_ov STREQUAL "")
-      set(_ov "${CMAKE_SOURCE_DIR}/.deps-override")
+# Keep the resolved source and declared provenance available to release packaging.
+function(_deps_record name source)
+  set_property(GLOBAL PROPERTY "DEPS_${name}_SOURCE" "${source}")
+  foreach(_field VERSION URL URL_HASH GIT_REPOSITORY GIT_TAG)
+    set_property(GLOBAL PROPERTY "DEPS_${name}_${_field}" "${ARG_${_field}}")
+  endforeach()
+endfunction()
+
+# Also used by the offline manifest checker: CMake parses its own syntax.
+macro(_deps_parse_source name)
+  cmake_parse_arguments(ARG "PREFER_PACKAGE;EXPOSE_FIND_PACKAGE;SYSTEM;GIT_SHALLOW"
+    "VERSION;GIT_REPOSITORY;GIT_TAG;URL;URL_HASH" "CMAKE_ARGS;COMPONENTS" ${ARGN})
+  _deps_check_arguments("${name}")
+  if(ARG_GIT_REPOSITORY AND ARG_URL)
+    message(FATAL_ERROR "[deps] ${name}: choose either GIT_REPOSITORY or URL")
+  elseif(ARG_GIT_REPOSITORY)
+    string(LENGTH "${ARG_GIT_TAG}" _tag_length)
+    set(_commit FALSE)
+    if(_tag_length EQUAL 40 AND ARG_GIT_TAG MATCHES "^[0-9a-fA-F]+$")
+      set(_commit TRUE)
     endif()
-    if(EXISTS "${_ov}/${name}")
-      set("FETCHCONTENT_SOURCE_DIR_${_UP}" "${_ov}/${name}" CACHE PATH "" FORCE)
-      message(STATUS "[deps] ${name}: 本地覆盖 -> ${_ov}/${name}")
+    if(NOT _commit AND NOT ARG_GIT_TAG MATCHES "^v?[0-9]+\\.[0-9]+\\.[0-9]+([-+][A-Za-z0-9.-]+)?$")
+      message(FATAL_ERROR "[deps] ${name}: GIT_TAG must be a commit SHA or version tag")
+    endif()
+    if(_commit AND ARG_GIT_SHALLOW)
+      message(FATAL_ERROR "[deps] ${name}: GIT_SHALLOW cannot be combined with a commit SHA; use a hashed archive")
+    endif()
+  elseif(ARG_URL)
+    _deps_check_hash("${name}" "${ARG_URL_HASH}")
+    if(ARG_GIT_TAG OR ARG_GIT_SHALLOW)
+      message(FATAL_ERROR "[deps] ${name}: Git options cannot be used with URL")
+    endif()
+  else()
+    message(FATAL_ERROR "[deps] ${name}: GIT_REPOSITORY or URL is required")
+  endif()
+  foreach(_arg IN LISTS ARG_CMAKE_ARGS)
+    if(NOT _arg MATCHES "^(-D)?([A-Za-z_][A-Za-z0-9_]*)(:[A-Za-z_]+)?=(.*)$")
+      message(FATAL_ERROR "[deps] ${name}: invalid CMAKE_ARGS entry: ${_arg}")
+    endif()
+  endforeach()
+endmacro()
+
+function(_deps_source name header_only)
+  _deps_parse_source("${name}" ${ARGN})
+  set(_package_name "${name}")
+  string(TOLOWER "${name}" name)
+  string(TOUPPER "${name}" _up)
+  set(_override "${FETCHCONTENT_SOURCE_DIR_${_up}}")
+  # FetchContent otherwise copies a scoped override into its cache on first use.
+  set("FETCHCONTENT_SOURCE_DIR_${_up}" "" CACHE PATH "Explicit dependency source override")
+  if(NOT DEPS_ALLOW_OVERRIDE AND _override)
+    message(FATAL_ERROR "[deps] ${name}: source override is forbidden; remove FETCHCONTENT_SOURCE_DIR_${_up} or configure --fresh")
+  endif()
+  if(DEPS_ALLOW_OVERRIDE AND NOT _override)
+    set(_override_root "$ENV{DEPS_OVERRIDE_DIR}")
+    if(NOT _override_root)
+      set(_override_root "${CMAKE_CURRENT_SOURCE_DIR}/.deps-override")
+    endif()
+    if(IS_DIRECTORY "${_override_root}/${name}")
+      set(_override "${_override_root}/${name}")
     endif()
   endif()
 
-  # 2) 优先使用已安装包(可选策略)
-  if((DEPS_PREFER_PACKAGE OR ARG_PREFER_PACKAGE)
-     AND NOT FETCHCONTENT_FULLY_DISCONNECTED
-     AND NOT DEFINED CACHE{FETCHCONTENT_SOURCE_DIR_${_UP}})
-    find_package("${name}" "${ARG_VERSION}" QUIET COMPONENTS ${ARG_COMPONENTS})
-    if(${name}_FOUND)
-      message(STATUS "[deps] ${name}: 使用已安装包")
+  if((DEPS_PREFER_PACKAGE OR ARG_PREFER_PACKAGE) AND NOT _override AND NOT header_only)
+    if(NOT DEPS_ALLOW_OVERRIDE)
+      message(FATAL_ERROR "[deps] ${name}: installed-package preference is forbidden in strict builds")
+    endif()
+    set(_find_args CONFIG QUIET)
+    if(ARG_VERSION)
+      list(PREPEND _find_args "${ARG_VERSION}" EXACT)
+    endif()
+    if(ARG_COMPONENTS)
+      list(APPEND _find_args COMPONENTS ${ARG_COMPONENTS})
+    endif()
+    find_package(${_package_name} ${_find_args})
+    if(${_package_name}_FOUND)
+      message(STATUS "[deps] ${name}: installed package (development mode)")
       return()
     endif()
   endif()
 
-  # 3) 组织 FetchContent_Declare 参数
-  set(_args)
+  string(SHA256 _key "${ARG_GIT_REPOSITORY}|${ARG_GIT_TAG}|${ARG_URL}|${ARG_URL_HASH}")
+  set(_entry "${DEPS_CACHE_DIR}/sources/${name}/${_key}")
+  set(_args SOURCE_DIR "${_entry}/src"
+    BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps/${name}-build"
+    SUBBUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/_deps/${name}-subbuild")
   if(ARG_GIT_REPOSITORY)
-    list(APPEND _args GIT_REPOSITORY "${ARG_GIT_REPOSITORY}"
-                      GIT_TAG        "${ARG_GIT_TAG}")
+    list(APPEND _args GIT_REPOSITORY "${ARG_GIT_REPOSITORY}" GIT_TAG "${ARG_GIT_TAG}")
     if(ARG_GIT_SHALLOW)
-      list(APPEND _args GIT_SHALLOW)     # --depth 1,仅对 tag/branch 可靠
+      list(APPEND _args GIT_SHALLOW TRUE)
     endif()
-  elseif(ARG_URL)
-    if(NOT ARG_URL_HASH)
-      message(FATAL_ERROR "[deps] ${name}: URL 源必须提供 URL_HASH(供应链校验)")
-    endif()
-    list(APPEND _args URL "${ARG_URL}" URL_HASH "${ARG_URL_HASH}")
   else()
-    message(FATAL_ERROR "[deps] ${name}: 必须指定 GIT_REPOSITORY 或 URL")
-  endif()
-
-  if(ARG_EXPOSE_FIND_PACKAGE)
-    list(APPEND _args OVERRIDE_FIND_PACKAGE)   # CMake 3.24+
+    list(APPEND _args URL "${ARG_URL}" URL_HASH "${ARG_URL_HASH}" TLS_VERIFY TRUE)
   endif()
   if(ARG_SYSTEM)
-    list(APPEND _args SYSTEM)                  # CMake 3.25+
+    list(APPEND _args SYSTEM)
   endif()
-  if(ARG_CMAKE_ARGS)
-    list(APPEND _args CMAKE_ARGS ${ARG_CMAKE_ARGS})
+  if(ARG_EXPOSE_FIND_PACKAGE)
+    list(APPEND _args OVERRIDE_FIND_PACKAGE)
+  endif()
+  if(header_only)
+    # A header-only checkout may acquire a CMakeLists.txt upstream; never execute it.
+    list(APPEND _args SOURCE_SUBDIR "__headers_only__")
   endif()
 
-  FetchContent_Declare("${name}" ${_args})
-
-  # 将 CMAKE_ARGS 预设为强制 cache 变量,确保子项目 option() 遵守清单。
-  # 原因:FetchContent 的 CMAKE_ARGS 在 add_subdirectory 路径下不可靠
-  # (CMake 3.31 实测未传给 spdlog,SPDLOG_FMT_EXTERNAL 仍为默认 OFF,
-  #  导致 spdlog 内嵌 fmt -- 与外部 fmt 形成 ODR 冲突)。
-  # 清单即权威:改选项请改清单(每次配置均 FORCE 覆盖)。
+  # Normal variables are inherited by add_subdirectory; no global cache FORCE.
   foreach(_arg IN LISTS ARG_CMAKE_ARGS)
-    # 支持 -DVAR=VALUE / VAR=VALUE / -DVAR:TYPE=VALUE
-    string(REGEX REPLACE "^-D" "" _arg "${_arg}")
-    string(REGEX REPLACE "^([^:=]+):[^=]*=" "\\1=" _arg "${_arg}")
-    if(_arg MATCHES "^([^=]+)=(.*)$")
-      set(_vname "${CMAKE_MATCH_1}")
-      set(_vval  "${CMAKE_MATCH_2}")
-      if(_vval MATCHES "^(ON|OFF|TRUE|FALSE|YES|NO|1|0)$")
-        set("${_vname}" "${_vval}" CACHE BOOL "" FORCE)
-      else()
-        set("${_vname}" "${_vval}" CACHE STRING "" FORCE)
-      endif()
-    endif()
+    string(REGEX MATCH "^(-D)?([A-Za-z_][A-Za-z0-9_]*)(:[A-Za-z_]+)?=(.*)$" _match "${_arg}")
+    set("${CMAKE_MATCH_2}" "${CMAKE_MATCH_4}")
   endforeach()
 
-  message(STATUS "[deps] ${name}: 拉取源码 @ ${ARG_GIT_TAG}${ARG_URL_HASH}")
-  FetchContent_MakeAvailable("${name}")
+  # Do not inherit a stale FULLY_DISCONNECTED cache value from the old engine.
+  # Offline behavior is enforced here before FetchContent can download anything.
+  set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
+  if(_override)
+    if(NOT IS_DIRECTORY "${_override}")
+      message(FATAL_ERROR "[deps] ${name}: override directory does not exist: ${_override}")
+    endif()
+    set("FETCHCONTENT_SOURCE_DIR_${_up}" "${_override}")
+    message(STATUS "[deps] ${name}: local override -> ${_override}")
+  else()
+    file(MAKE_DIRECTORY "${_entry}")
+    file(LOCK "${_entry}/.lock" GUARD FUNCTION TIMEOUT 120)
+    if(EXISTS "${_entry}/.ready" AND IS_DIRECTORY "${_entry}/src")
+      set("FETCHCONTENT_SOURCE_DIR_${_up}" "${_entry}/src")
+      message(STATUS "[deps] ${name}: cached source -> ${_entry}/src")
+    elseif(DEPS_OFFLINE)
+      message(FATAL_ERROR "[deps] ${name}: offline cache missing for requested pin -> ${_entry}")
+    else()
+      set("FETCHCONTENT_SOURCE_DIR_${_up}" "")
+      message(STATUS "[deps] ${name}: fetching ${ARG_GIT_TAG}${ARG_URL_HASH}")
+    endif()
+  endif()
+
+  FetchContent_Declare(${name} ${_args})
+  FetchContent_MakeAvailable(${name})
+  FetchContent_GetProperties(${name})
+  _deps_record("${name}" "${${name}_SOURCE_DIR}")
+  if(NOT _override)
+    if(NOT "${${name}_SOURCE_DIR}" STREQUAL "${_entry}/src")
+      message(FATAL_ERROR "[deps] ${name}: an earlier declaration/provider changed the locked source")
+    endif()
+    file(WRITE "${_entry}/.ready" "${_key}\n")
+  endif()
+  if(header_only AND NOT TARGET ${name}::${name})
+    add_library(${name}::${name} INTERFACE IMPORTED GLOBAL)
+    set_target_properties(${name}::${name} PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${${name}_SOURCE_DIR}")
+    if(ARG_SYSTEM)
+      set_property(TARGET ${name}::${name} PROPERTY
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${${name}_SOURCE_DIR}")
+    endif()
+  endif()
 endfunction()
 
-# ---------------------------------------------------------------------------
-# add_header_dependency(name
-#   VERSION <ver>
-#   GIT_REPOSITORY <url> GIT_TAG <sha-or-tag> [GIT_SHALLOW]
-#   [URL <url> URL_HASH <sha256>]      # 或 tarball 源(供应链校验)
-#   [SYSTEM]                            # 头标记 SYSTEM,抑制告警
-# )
-# header-only 依赖专用:无 CMakeLists.txt,不能 add_subdirectory。
-# FetchContent 取源码后直接建 INTERFACE 库 name::name(仅暴露 include 路径)。
-# 关键:FetchContent_MakeAvailable 在内容无 CMakeLists.txt 时会优雅跳过
-# add_subdirectory(CMake 文档明示"It is not an error for there to be no
-# CMakeLists.txt file"),故无需调用 3.30+ 已弃用的 FetchContent_Populate。
-# 与 add_dependency 共享 .deps-cache / DEPS_OFFLINE / .deps-override 语义。
-# ---------------------------------------------------------------------------
+function(add_dependency name)
+  _deps_source("${name}" FALSE ${ARGN})
+endfunction()
+
 function(add_header_dependency name)
-  set(options SYSTEM GIT_SHALLOW)
-  set(oneValueArgs VERSION GIT_REPOSITORY GIT_TAG URL URL_HASH)
-  cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "" ${ARGN})
-
-  string(TOUPPER "${name}" _UP)
-
-  # 1) 本地覆盖:开发时把依赖 checkout 到 .deps-override/<name> 即生效
-  if(DEPS_ALLOW_OVERRIDE)
-    set(_ov "$ENV{DEPS_OVERRIDE_DIR}")
-    if(_ov STREQUAL "")
-      set(_ov "${CMAKE_SOURCE_DIR}/.deps-override")
-    endif()
-    if(EXISTS "${_ov}/${name}")
-      set("FETCHCONTENT_SOURCE_DIR_${_UP}" "${_ov}/${name}" CACHE PATH "" FORCE)
-      message(STATUS "[deps] ${name}: 本地覆盖 -> ${_ov}/${name}")
-    endif()
-  endif()
-
-  # 2) 组织 FetchContent_Declare 参数(无 CMAKE_ARGS / EXPOSE_FIND_PACKAGE:
-  #    header-only 无构建脚本,也不参与 find_package 覆盖)
-  set(_args)
-  if(ARG_GIT_REPOSITORY)
-    list(APPEND _args GIT_REPOSITORY "${ARG_GIT_REPOSITORY}"
-                      GIT_TAG        "${ARG_GIT_TAG}")
-    if(ARG_GIT_SHALLOW)
-      list(APPEND _args GIT_SHALLOW)     # 仅对 tag/branch 可靠;SHA 时被忽略
-    endif()
-  elseif(ARG_URL)
-    if(NOT ARG_URL_HASH)
-      message(FATAL_ERROR "[deps] ${name}: URL 源必须提供 URL_HASH(供应链校验)")
-    endif()
-    list(APPEND _args URL "${ARG_URL}" URL_HASH "${ARG_URL_HASH}")
-  else()
-    message(FATAL_ERROR "[deps] ${name}: 必须指定 GIT_REPOSITORY 或 URL")
-  endif()
-
-  FetchContent_Declare("${name}" ${_args})
-
-  # 3) 取源码:无 CMakeLists.txt -> MakeAvailable 跳过 add_subdirectory,仅下载。
-  FetchContent_MakeAvailable("${name}")
-  FetchContent_GetProperties("${name}")     # 确保 <name>_SOURCE_DIR 在当前作用域可见
-
-  # 4) IMPORTED INTERFACE 目标(幂等:重复配置不重建)
-  #    用 IMPORTED 而非普通 INTERFACE:目标名带 "::" 仅对 IMPORTED/ALIAS 合法
-  #    (与 add_binary_dependency 一致);普通 INTERFACE 库名不允许含 "::"。
-  if(NOT TARGET ${name}::${name})
-    add_library(${name}::${name} INTERFACE IMPORTED GLOBAL)
-    set(_inc "${${name}_SOURCE_DIR}")
-    set_target_properties(${name}::${name} PROPERTIES
-      INTERFACE_INCLUDE_DIRECTORIES "${_inc}")
-    if(ARG_SYSTEM)
-      set_target_properties(${name}::${name} PROPERTIES
-        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_inc}")
-    endif()
-    message(STATUS "[deps] ${name}: header-only @ ${_inc}")
-  endif()
+  _deps_source("${name}" TRUE ${ARGN})
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -237,22 +221,15 @@ endfunction()
 #
 # 二进制缓存按 CMAKE_SYSTEM_NAME/CMAKE_SYSTEM_PROCESSOR 隔离,避免同一源码树在
 # Windows / WSL / Linux / macOS 间共享 .deps-cache 时相互污染。
-# 预编译包通常只有 Release,Debug/RelWithDebInfo/MinSizeRel 映射到 Release。
+# 预编译包只有 Release;其他标准配置仅在 ALLOW_RELEASE_FALLBACK 时映射到 Release。
 # ---------------------------------------------------------------------------
-function(add_binary_dependency name)
-  set(options SYSTEM)
+macro(_deps_parse_binary name)
+  set(options SYSTEM ALLOW_RELEASE_FALLBACK)
   set(oneValueArgs VERSION URL URL_HASH SUBDIR INCLUDE_DIR)
   set(multiValueArgs IMPLIB LIBRARY RUNTIME)
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-
-  if(ARG_UNPARSED_ARGUMENTS)
-    message(FATAL_ERROR
-      "[deps] ${name}: 未识别的 add_binary_dependency 参数 -> ${ARG_UNPARSED_ARGUMENTS}")
-  endif()
-  if(ARG_KEYWORDS_MISSING_VALUES)
-    message(FATAL_ERROR
-      "[deps] ${name}: 以下参数缺少值 -> ${ARG_KEYWORDS_MISSING_VALUES}")
-  endif()
+  _deps_check_arguments("${name}")
+  _deps_check_hash("${name}" "${ARG_URL_HASH}")
   if(NOT ARG_VERSION)
     message(FATAL_ERROR "[deps] ${name}: 二进制依赖必须提供 VERSION")
   endif()
@@ -280,6 +257,10 @@ function(add_binary_dependency name)
       "[deps] ${name}: 暂不支持二进制依赖平台 "
       "${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
   endif()
+endmacro()
+
+function(add_binary_dependency name)
+  _deps_parse_binary("${name}" ${ARGN})
 
   # 平台 key:同一个仓库在 Windows/WSL/Linux/macOS 间共享源码目录时,
   # 不允许复用另一目标平台已解压的二进制包。
@@ -289,15 +270,12 @@ function(add_binary_dependency name)
     set(_platform "unknown-platform")
   endif()
 
-  # 缓存根:与源码缓存并列,落在 .deps-cache/<name>-binary/<platform>/ 下。
-  set(_root      "${FETCHCONTENT_BASE_DIR}/${name}-binary/${_platform}")
-  set(_stamp     "${_root}/.extracted")
-  set(_source    "${_root}/src")
-
-  # fingerprint 用于检测 URL / hash / version / SUBDIR pin 是否发生变化。
-  # pin 改变时必须重新解压,不能只因为旧 .extracted 存在就误判为缓存命中。
+  # 不同 pin 使用不同缓存项,更新失败不会破坏仍在使用的旧版本。
   string(SHA256 _fingerprint
     "${ARG_VERSION}|${ARG_URL}|${ARG_URL_HASH}|${ARG_SUBDIR}")
+  set(_root "${DEPS_CACHE_DIR}/binary/${name}/${_platform}/${_fingerprint}")
+  set(_stamp "${_root}/.ready")
+  set(_source "${_root}/src")
 
   # 正常下载路径下,包根默认是 <root>/src[/SUBDIR]。
   set(_src "${_source}")
@@ -315,7 +293,7 @@ function(add_binary_dependency name)
   if(DEPS_ALLOW_OVERRIDE)
     set(_ov "$ENV{DEPS_OVERRIDE_DIR}")
     if(_ov STREQUAL "")
-      set(_ov "${CMAKE_SOURCE_DIR}/.deps-override")
+      set(_ov "${CMAKE_CURRENT_SOURCE_DIR}/.deps-override")
     endif()
 
     set(_ov_platform "${_ov}/${name}/${_platform}")
@@ -334,7 +312,11 @@ function(add_binary_dependency name)
 
   # 2) 判断缓存是否与当前 pin 完全一致。
   set(_cache_hit FALSE)
-  if(NOT _skip_download AND EXISTS "${_stamp}")
+  if(NOT _skip_download)
+    file(MAKE_DIRECTORY "${_root}")
+    file(LOCK "${_root}/.lock" GUARD FUNCTION TIMEOUT 120)
+  endif()
+  if(NOT _skip_download AND EXISTS "${_stamp}" AND IS_DIRECTORY "${_source}")
     file(READ "${_stamp}" _cached_fingerprint)
     string(STRIP "${_cached_fingerprint}" _cached_fingerprint)
     if(_cached_fingerprint STREQUAL _fingerprint)
@@ -351,10 +333,6 @@ function(add_binary_dependency name)
         "[deps] ${name}: 离线模式但当前平台/pin的二进制缓存缺失 -> ${_root}")
     endif()
 
-    # pin 变化时清理旧解压目录,避免不同版本的文件残留并存。
-    file(REMOVE_RECURSE "${_source}")
-    file(MAKE_DIRECTORY "${_root}" "${_source}")
-
     # 保留 URL 中原始归档文件名/扩展名,兼容 .zip/.tar.gz/.tar.xz 等。
     string(REGEX REPLACE "^.*/" "" _archive_name "${ARG_URL}")
     string(REGEX REPLACE "[?#].*$" "" _archive_name "${_archive_name}")
@@ -368,15 +346,18 @@ function(add_binary_dependency name)
       "(${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR})")
 
     file(DOWNLOAD "${ARG_URL}" "${_archive}"
-         STATUS _st EXPECTED_HASH "${ARG_URL_HASH}" SHOW_PROGRESS)
+         STATUS _st EXPECTED_HASH "${ARG_URL_HASH}" TLS_VERIFY ON
+         TIMEOUT 300 INACTIVITY_TIMEOUT 30 SHOW_PROGRESS)
     list(GET _st 0 _rc)
     if(NOT _rc EQUAL 0)
       file(REMOVE "${_archive}")
       message(FATAL_ERROR "[deps] ${name}: 下载失败 -> ${_st}")
     endif()
 
+    # 此目录只属于当前 pin,且没有有效完成标记;可安全重试解压。
+    file(REMOVE_RECURSE "${_source}")
+    file(MAKE_DIRECTORY "${_source}")
     file(ARCHIVE_EXTRACT INPUT "${_archive}" DESTINATION "${_source}")
-    file(WRITE "${_stamp}" "${_fingerprint}\n")
   endif()
 
   # 4) 校验包布局。尽早在 configure 阶段报错,避免错误拖到链接阶段。
@@ -412,6 +393,9 @@ function(add_binary_dependency name)
     endif()
     list(APPEND _runtime "${_abs}")
   endforeach()
+  if(NOT _skip_download)
+    file(WRITE "${_stamp}" "${_fingerprint}\n")
+  endif()
 
   # 5) IMPORTED 目标(幂等:重复配置不重建)。
   if(NOT TARGET ${name}::${name})
@@ -459,10 +443,13 @@ function(add_binary_dependency name)
       endif()
     endif()
 
-    # 预编译包通常只提供 Release:其它常用配置统一映射到 Release。
+    # A Release-only binary must not silently stand in for a Debug ABI.
     foreach(_cfg DEBUG RELWITHDEBINFO MINSIZEREL)
-      set_target_properties(${name}::${name} PROPERTIES
-        MAP_IMPORTED_CONFIG_${_cfg} RELEASE)
+      if(ARG_ALLOW_RELEASE_FALLBACK)
+        set_property(TARGET ${name}::${name} PROPERTY MAP_IMPORTED_CONFIG_${_cfg} RELEASE)
+      else()
+        set_property(TARGET ${name}::${name} PROPERTY MAP_IMPORTED_CONFIG_${_cfg} "UNSUPPORTED_${_cfg}")
+      endif()
     endforeach()
 
     message(STATUS
@@ -474,6 +461,7 @@ function(add_binary_dependency name)
   # binary_dep_deploy() 通过该 INTERNAL cache 变量读取。
   set("${name}_RUNTIME_LIBS" "${_runtime}" CACHE INTERNAL
       "runtime files of binary dependency ${name}" FORCE)
+  _deps_record("${name}" "${_src}")
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -501,6 +489,8 @@ function(binary_dep_deploy target)
     endif()
   endforeach()
   list(REMOVE_DUPLICATES _runtime_files)
+  # Ninja/Make must re-run deployment when only a runtime DLL changes.
+  set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS ${_runtime_files})
 
   foreach(_runtime IN LISTS _runtime_files)
     add_custom_command(TARGET ${target} POST_BUILD

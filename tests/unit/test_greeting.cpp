@@ -1,6 +1,7 @@
 #include "core/greeting.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 #include <string>
 
 // 核心库单元测试:验证 make_greeting / build_info 的行为。
@@ -12,7 +13,7 @@ TEST(GreetingTest, MakeGreeting) {
 }
 
 TEST(GreetingTest, BuildInfoIsJson) {
-    const std::string info = cpp_template::build_info("world");
-    EXPECT_NE(info.find("\"project\""), std::string::npos);
-    EXPECT_NE(info.find("\"cpp-template\""), std::string::npos);
+    const auto info = nlohmann::json::parse(cpp_template::build_info("world"));
+    EXPECT_EQ(info.at("project"), "cpp-template");
+    EXPECT_EQ(info.at("greeting"), "Hello, world!");
 }

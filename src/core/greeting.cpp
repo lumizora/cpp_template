@@ -15,7 +15,7 @@ std::string build_info(std::string_view name) {
     nlohmann::json info = {
         {"project", "cpp-template"},
         {"greeting", make_greeting(name)},
-        {"dependencies", {"fmt", "spdlog", "nlohmann_json", "cli11", "stb", "glfw"}},
+        {"version", CPP_TEMPLATE_VERSION},
     };
     return info.dump(2);
 }

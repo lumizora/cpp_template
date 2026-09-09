@@ -1,0 +1,99 @@
+name: CMake
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+            cmake: 3.25.2
+            shared: 'OFF'
+          - os: ubuntu-24.04
+            cc: clang
+            cxx: clang++
+            cmake: 3.31.10
+            shared: 'ON'
+          - os: windows-2022
+            cc: cl
+            cxx: cl
+            cmake: 3.31.10
+            shared: 'OFF'
+          - os: macos-14
+            cc: clang
+            cxx: clang++
+            cmake: 3.31.10
+            shared: 'ON'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+      - name: Build tools
+        run: python -m pip install cmake==${{ matrix.cmake }} ninja==1.13.0
+      - name: GLFW development headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+      - name: Validate dependency manifest
+        run: python scripts/check_deps_pinned.py
+      - name: Configure all examples and tests
+        run: cmake --preset ci -DCPP_TEMPLATE_WITH_GLFW=ON -DBUILD_BENCHMARKING=ON -DCPP_TEMPLATE_PACKAGING=ON -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+      - name: Release
+        run: cmake --build --preset ci --parallel 2
+      - name: Release tests
+        run: ctest --preset ci
+      - name: Release archives
+        run: cpack --config build/ci/CPackConfig.cmake -C Release -B build/packages
+      - name: Debug
+        run: cmake --build build/ci --config Debug --parallel 2
+      - name: Debug tests
+        run: ctest --test-dir build/ci -C Debug --output-on-failure --no-tests=error
+      - name: Configure fresh offline build without graphics
+        run: cmake --preset offline -DBUILD_TESTING=ON -DDEPS_ALLOW_OVERRIDE=OFF
+      - name: Build offline
+        run: cmake --build --preset offline --parallel 2
+      - name: Offline tests
+        run: ctest --test-dir build/offline -C Release --output-on-failure --no-tests=error
+
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Quality tools
+        run: python -m pip install cmake==3.31.10 ninja==1.13.0 clang-tidy==22.1.8
+      - name: Static analysis
+        run: |
+          cmake --preset analyze
+          cmake --build --preset analyze --parallel 2
+      - name: ASan and UBSan
+        run: |
+          cmake --preset sanitize
+          cmake --build --preset sanitize --parallel 2
+          ctest --preset sanitize

@@ -1,340 +1,90 @@
-# ---------------------------------------------------------------------------
-# 依赖清单 = 锁文件
-#
-# 覆盖 cmake/DependencyManager.cmake 支持的三种依赖形式:
-#   1) add_dependency(...)         CMake 工程(源码拉取,git/URL + pin)
-#   2) add_header_dependency(...)  header-only 无 CMakeLists(如 stb)
-#   3) add_binary_dependency(...)  预编译二进制(下载 -> SHA256 校验 -> IMPORTED)
-#
-# 生产环境请把 GIT_TAG 换成 40 位 commit SHA(逐字节可复现):
-#   git ls-remote https://github.com/fmtlib/fmt.git refs/tags/10.2.1
-# 此处用版本 tag 保证可构建;check_deps_pinned.py 允许版本 tag,但禁止分支名。
-#
-# GIT_SHALLOW:--depth 1 浅克隆。nlohmann_json 全量历史约 273MB,浅克隆仅几 MB。
-# 注意:GIT_TAG 为 commit SHA 时 FetchContent 会忽略 GIT_SHALLOW(浅克隆按 SHA
-# 不可靠);届时大仓库应改用 URL+URL_HASH:
-#   curl -sL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz | sha256sum
-#   add_dependency(nlohmann_json URL <tarball> URL_HASH SHA256=<hash> ...)
-#
-# 声明顺序很重要:被 EXPOSE_FIND_PACKAGE 的叶子库必须先于依赖它的库。
-# fmt 先声明并 EXPOSE,spdlog 用 SPDLOG_FMT_EXTERNAL=ON 内部 find_package(fmt)
-# 时会被重定向到同一份 fmt -- 传递依赖去重。
-# ---------------------------------------------------------------------------
-
-# ===========================================================================
-# 形式 1:add_dependency -- CMake 工程依赖(git / URL 源码拉取)
-# ===========================================================================
-
+# Dependency manifest: versions retained, archive contents locked by SHA256.
+# Declare fmt before spdlog so find_package(fmt) resolves to the same target.
 add_dependency(fmt
   VERSION 10.2.1
-  GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-  GIT_TAG        10.2.1
-  GIT_SHALLOW
-  EXPOSE_FIND_PACKAGE
-  SYSTEM
-  CMAKE_ARGS
-    -DFMT_TEST=OFF
-    -DFMT_DOC=OFF
-    -DFMT_INSTALL=OFF)
+  URL https://codeload.github.com/fmtlib/fmt/tar.gz/10.2.1
+  URL_HASH SHA256=1250e4cc58bf06ee631567523f48848dc4596133e163f02615c97f78bab6c811
+  EXPOSE_FIND_PACKAGE SYSTEM
+  CMAKE_ARGS -DFMT_TEST=OFF -DFMT_DOC=OFF -DFMT_INSTALL=OFF)
 
 add_dependency(nlohmann_json
   VERSION 3.11.3
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG        v3.11.3
-  GIT_SHALLOW
-  EXPOSE_FIND_PACKAGE
-  SYSTEM
-  CMAKE_ARGS
-    -DJSON_Testing=OFF
-    -DJSON_Install=OFF)
+  URL https://codeload.github.com/nlohmann/json/tar.gz/v3.11.3
+  URL_HASH SHA256=0d8ef5af7f9794e3263480193c491549b2ba6cc74bb018906202ada498a79406
+  EXPOSE_FIND_PACKAGE SYSTEM
+  CMAKE_ARGS -DJSON_Testing=OFF -DJSON_Install=OFF)
 
 add_dependency(spdlog
   VERSION 1.13.0
-  GIT_REPOSITORY https://github.com/gabime/spdlog.git
-  GIT_TAG        v1.13.0
-  GIT_SHALLOW
+  URL https://codeload.github.com/gabime/spdlog/tar.gz/v1.13.0
+  URL_HASH SHA256=534f2ee1a4dcbeb22249856edfb2be76a1cf4f708a20b0ac2ed090ee24cfdbc9
   SYSTEM
-  CMAKE_ARGS
-    -DSPDLOG_FMT_EXTERNAL=ON        # 复用上面的 fmt,不再内嵌
-    -DSPDLOG_BUILD_TESTS=OFF
-    -DSPDLOG_BUILD_EXAMPLE=OFF
-    -DSPDLOG_INSTALL=OFF)
+  CMAKE_ARGS -DSPDLOG_FMT_EXTERNAL=ON -DSPDLOG_BUILD_TESTS=OFF
+    -DSPDLOG_BUILD_EXAMPLE=OFF -DSPDLOG_INSTALL=OFF)
 
-# CLI11:现代 C++ 命令行参数解析(header-only,自带 CMake target CLI11::CLI11)。
-add_dependency(cli11
+add_dependency(CLI11
   VERSION 2.7.2
-  GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-  GIT_TAG        v2.7.2
-  GIT_SHALLOW
+  URL https://codeload.github.com/CLIUtils/CLI11/tar.gz/v2.7.2
+  URL_HASH SHA256=46eef3101da70852ec7af026e09d485ccee81813331c8c6052d39344443b83da
   SYSTEM
-  CMAKE_ARGS
-    -DCLI11_BUILD_TESTS=OFF
-    -DCLI11_BUILD_EXAMPLES=OFF
-    -DCLI11_BUILD_DOCS=OFF
-    -DCLI11_INSTALL=OFF)
+  CMAKE_ARGS -DCLI11_BUILD_TESTS=OFF -DCLI11_BUILD_EXAMPLES=OFF
+    -DCLI11_BUILD_DOCS=OFF -DCLI11_INSTALL=OFF)
 
-# ===========================================================================
-# 形式 2:add_header_dependency -- header-only 无 CMakeLists(如 stb)
-# ===========================================================================
-#
-# stb:单文件图像库(读取尺寸等)。无构建脚本,走专用引擎函数:
-# FetchContent 取源码 -> INTERFACE 库(仅暴露 include 路径),不经 add_subdirectory。
-# GIT_TAG 为 commit SHA(逐字节可复现);stb 无 semver tag。
 add_header_dependency(stb
-  GIT_REPOSITORY https://github.com/nothings/stb.git
-  GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20
+  VERSION 2c980bb59875b0d32144a71867fbdebb2f77cd20
+  URL https://codeload.github.com/nothings/stb/tar.gz/2c980bb59875b0d32144a71867fbdebb2f77cd20
+  URL_HASH SHA256=9a955b1b49a4410088a2e0ee2a9c057c3c907d0c1d75454144cb980aca0ba515
   SYSTEM)
 
-# ===========================================================================
-# GLFW -- 平台差异示例
-# ===========================================================================
-#
-# Windows x64:
-#   GLFW 官方提供预编译 WIN64 包,走 add_binary_dependency。
-#
-# Linux:
-#   GLFW 官方 release 不提供 Linux 预编译二进制包,走源码构建。
-#   仍然使用 add_dependency,因此完整继承:
-#     .deps-cache / DEPS_OFFLINE / .deps-override / SYSTEM / CMAKE_ARGS
-#
-#   Linux 默认构建 X11 backend:
-#     - 适用于 Ubuntu / GitHub Codespaces / CI
-#     - 避免 Wayland 开发依赖
-#
-#   Ubuntu/Debian 需要安装:
-#
-#     编译工具:
-#       build-essential
-#       ninja-build
-#
-#     X11:
-#       libx11-dev
-#       libxrandr-dev
-#       libxinerama-dev
-#       libxcursor-dev
-#       libxi-dev
-#
-#     OpenGL:
-#       libgl1-mesa-dev
-#       libglu1-mesa-dev
-#
-#   其中:
-#
-#       libgl1-mesa-dev
-#
-#   提供:
-#
-#       /usr/include/GL/gl.h
-#
-#   缺少时会导致:
-#
-#       fatal error:
-#           GL/gl.h: No such file or directory
-#
-#
-# macOS:
-#   虽有官方预编译包,这里统一走源码构建,减少平台二进制清单维护成本。
-#
-#
-# 上层统一链接 glfw::glfw:
-#
-#   Windows binary target:
-#       add_binary_dependency
-#           -> glfw::glfw
-#
-#   Linux/macOS:
-#       add_dependency
-#           -> glfw
-#           -> glfw::glfw ALIAS
-#
-# ===========================================================================
-
-
-if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$")
-
-
-  # SHA256:
-  #
-  #   certutil -hashfile glfw-3.4.bin.WIN64.zip SHA256
-  #
-  add_binary_dependency(glfw
-
-    VERSION 3.4
-
-    URL
-      https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.bin.WIN64.zip
-
-    URL_HASH SHA256=54EFA829400F2A0537F742B2B3BDD74E437BB4F2F048E4B7D3C5557D11A611E6
-
-    SUBDIR
-      glfw-3.4.bin.WIN64
-
-    INCLUDE_DIR
-      include
-
-    IMPLIB
-      lib-vc2022/glfw3dll.lib
-
-    RUNTIME
-      lib-vc2022/glfw3.dll
-
-    SYSTEM
-  )
-
-
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-
-
-  # Linux/Codespaces:
-  #
-  # GLFW 官方不提供 Linux 预编译 binary release,
-  # 因此采用源码构建。
-  #
-  # URL tarball + SHA256:
-  #
-  #   相比 GIT_TAG:
-  #     - 内容固定
-  #     - 可复现
-  #     - 更符合依赖锁文件语义
-  #
-  #
-  # Ubuntu/Debian 系统依赖:
-  #
-  #   sudo apt install \
-  #       build-essential \
-  #       ninja-build \
-  #       libgl1-mesa-dev \
-  #       libglu1-mesa-dev \
-  #       libx11-dev \
-  #       libxrandr-dev \
-  #       libxinerama-dev \
-  #       libxcursor-dev \
-  #       libxi-dev
-
-
-  add_dependency(glfw
-
-    VERSION 3.4
-
-    URL
-      https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz
-
-    URL_HASH SHA256=c038d34200234d071fae9345bc455e4a8f2f544ab60150765d7704e08f3dac01
-
-    SYSTEM
-
-    CMAKE_ARGS
-
-      # Linux window backend
-      -DGLFW_BUILD_X11=ON
-      -DGLFW_BUILD_WAYLAND=OFF
-
-      # 不构建 GLFW 附带内容
-      -DGLFW_BUILD_DOCS=OFF
-      -DGLFW_BUILD_TESTS=OFF
-      -DGLFW_BUILD_EXAMPLES=OFF
-
-      # 第三方依赖,不执行安装
-      -DGLFW_INSTALL=OFF
-  )
-
-
-  # 统一 target:
-  #
-  # Windows:
-  #   glfw::glfw
-  #
-  # Linux:
-  #   glfw
-  #
-  # 统一:
-  #   glfw::glfw
-
-  if(TARGET glfw AND NOT TARGET glfw::glfw)
-
-    add_library(
-      glfw::glfw
-      ALIAS
-      glfw
-    )
-
+# Optional example: Windows MSVC x64 uses a prebuilt DLL; other supported
+# desktop targets build from source. The application always links glfw::glfw.
+if(CPP_TEMPLATE_WITH_GLFW)
+  if(WIN32 AND MSVC AND MSVC_CXX_ARCHITECTURE_ID STREQUAL "x64")
+    add_binary_dependency(glfw
+      VERSION 3.4
+      URL https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.bin.WIN64.zip
+      URL_HASH SHA256=54EFA829400F2A0537F742B2B3BDD74E437BB4F2F048E4B7D3C5557D11A611E6
+      SUBDIR glfw-3.4.bin.WIN64
+      INCLUDE_DIR include
+      IMPLIB lib-vc2022/glfw3dll.lib
+      RUNTIME lib-vc2022/glfw3.dll
+      ALLOW_RELEASE_FALLBACK # GLFW exposes a C ABI; no cross-DLL CRT ownership in this example.
+      SYSTEM)
+  elseif(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_glfw_options -DGLFW_BUILD_DOCS=OFF -DGLFW_BUILD_TESTS=OFF
+      -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_INSTALL=OFF)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      list(APPEND _glfw_options -DGLFW_BUILD_X11=ON -DGLFW_BUILD_WAYLAND=OFF)
+    endif()
+    add_dependency(glfw
+      VERSION 3.4
+      URL https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz
+      URL_HASH SHA256=c038d34200234d071fae9345bc455e4a8f2f544ab60150765d7704e08f3dac01
+      SYSTEM
+      CMAKE_ARGS ${_glfw_options})
+    if(TARGET glfw AND NOT TARGET glfw::glfw)
+      add_library(glfw::glfw ALIAS glfw)
+    endif()
+    unset(_glfw_options)
+  else()
+    message(FATAL_ERROR "GLFW example unsupported on ${CMAKE_SYSTEM_NAME}; disable CPP_TEMPLATE_WITH_GLFW")
   endif()
-
-
-elseif(APPLE)
-
-
-  add_dependency(glfw
-
-    VERSION 3.4
-
-    URL
-      https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz
-
-    URL_HASH SHA256=c038d34200234d071fae9345bc455e4a8f2f544ab60150765d7704e08f3dac01
-
-    SYSTEM
-
-    CMAKE_ARGS
-
-      # macOS backend
-      -DGLFW_BUILD_COCOA=ON
-
-      # 不构建 GLFW 附带内容
-      -DGLFW_BUILD_DOCS=OFF
-      -DGLFW_BUILD_TESTS=OFF
-      -DGLFW_BUILD_EXAMPLES=OFF
-
-      # 第三方依赖,不执行安装
-      -DGLFW_INSTALL=OFF
-  )
-
-
-  if(TARGET glfw AND NOT TARGET glfw::glfw)
-
-    add_library(
-      glfw::glfw
-      ALIAS
-      glfw
-    )
-
-  endif()
-
-
-else()
-
-
-  message(FATAL_ERROR
-    "Unsupported GLFW platform: "
-    "${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}"
-  )
-
-
 endif()
-
-# ===========================================================================
-# 测试 / 基准依赖(仅对应开关 ON 时拉取,与生产依赖同机制)
-# ===========================================================================
 
 if(BUILD_TESTING)
   add_dependency(googletest
     VERSION 1.14.0
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG        v1.14.0
-    GIT_SHALLOW
+    URL https://codeload.github.com/google/googletest/tar.gz/v1.14.0
+    URL_HASH SHA256=8ad598c73ad796e0d8280b082cebd82a630d73e73cd3c70057938a6501bba5d7
     SYSTEM
-    CMAKE_ARGS
-      -DINSTALL_GTEST=OFF)
+    CMAKE_ARGS -DINSTALL_GTEST=OFF)
 endif()
 
 if(BUILD_BENCHMARKING)
   add_dependency(benchmark
     VERSION 1.9.5
-    GIT_REPOSITORY https://github.com/google/benchmark.git
-    GIT_TAG        v1.9.5
-    GIT_SHALLOW
+    URL https://codeload.github.com/google/benchmark/tar.gz/v1.9.5
+    URL_HASH SHA256=9631341c82bac4a288bef951f8b26b41f69021794184ece969f8473977eaa340
     SYSTEM
-    CMAKE_ARGS
-      -DBENCHMARK_ENABLE_TESTING=OFF
-      -DBENCHMARK_INSTALL=OFF)
+    CMAKE_ARGS -DBENCHMARK_ENABLE_TESTING=OFF -DBENCHMARK_INSTALL=OFF)
 endif()

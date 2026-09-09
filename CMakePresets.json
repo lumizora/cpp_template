@@ -8,6 +8,18 @@
 
   "configurePresets": [
     {
+      "name": "sanitize", "inherits": "ci", "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CPP_TEMPLATE_SANITIZERS": "ON" }
+    },
+    {
+      "name": "analyze", "inherits": "ci", "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CPP_TEMPLATE_CLANG_TIDY": "ON" }
+    },
+    {
+      "name": "release", "inherits": "ci",
+      "cacheVariables": { "CPP_TEMPLATE_PACKAGING": "ON" }
+    },
+    {
       "name": "default",
       "displayName": "Default",
       "generator": "Ninja Multi-Config",
@@ -31,7 +43,10 @@
       "displayName": "CI (no local overrides)",
       "inherits": "default",
       "cacheVariables": {
-        "DEPS_ALLOW_OVERRIDE": "OFF"
+        "DEPS_ALLOW_OVERRIDE": "OFF",
+        "DEPS_PREFER_PACKAGE": "OFF",
+        "BUILD_TESTING": "ON",
+        "CPP_TEMPLATE_WARNINGS_AS_ERRORS": "ON"
       }
     },
 
@@ -55,6 +70,9 @@
   ],
 
   "buildPresets": [
+    { "name": "sanitize", "configurePreset": "sanitize", "configuration": "Debug" },
+    { "name": "analyze", "configurePreset": "analyze", "configuration": "Debug" },
+    { "name": "release", "configurePreset": "release", "configuration": "Release" },
     {
       "name": "default",
       "configurePreset": "default",
@@ -74,16 +92,44 @@
       "name": "bench",
       "configurePreset": "bench",
       "configuration": "Release"
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci",
+      "configuration": "Release"
+    },
+    {
+      "name": "offline",
+      "configurePreset": "offline",
+      "configuration": "Release"
     }
   ],
 
   "testPresets": [
+    { "name": "sanitize", "configurePreset": "sanitize", "configuration": "Debug",
+      "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" } },
+    { "name": "release", "configurePreset": "release", "configuration": "Release",
+      "output": { "outputOnFailure": true }, "execution": { "noTestsAction": "error" } },
     {
       "name": "test",
       "configurePreset": "test",
       "configuration": "Release",
       "output": {
         "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
       }
     }
   ]

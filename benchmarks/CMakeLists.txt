@@ -13,3 +13,4 @@ target_link_libraries(bench_format
   PRIVATE
     fmt::fmt
     benchmark::benchmark_main)
+cpp_template_target_defaults(bench_format)

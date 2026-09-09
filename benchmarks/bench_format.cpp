@@ -5,7 +5,7 @@
 // 示例基准:演示 Google Benchmark 接线与 API,并证明基准二进制可链接项目依赖
 // (此处为 fmt)。实际使用时请替换为待优化的自有代码。
 //
-// 运行:./build/bench/Release/bench_format.exe
+// 运行:./build/bench/bin/Release/bench_format (Windows 加 .exe)
 // 过滤:--benchmark_filter=Format
 // 输出 JSON:--benchmark_format=json
 static void FmtFormatToString(benchmark::State& state) {

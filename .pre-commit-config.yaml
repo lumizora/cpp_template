@@ -36,5 +36,5 @@ repos:
         name: check deps pinned (cmake/Dependencies.cmake)
         entry: python scripts/check_deps_pinned.py
         language: system
-        files: ^cmake/Dependencies\.cmake$
+        files: ^(cmake/.*\.cmake|scripts/check_deps_pinned\.(py|cmake))$
         pass_filenames: false
