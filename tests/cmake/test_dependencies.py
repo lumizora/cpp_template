@@ -11,8 +11,9 @@ ENGINE = (ROOT / "cmake/DependencyManager.cmake").as_posix()
 
 
 def run(*args, cwd=None, ok=True):
-    result = subprocess.run(args, cwd=cwd, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
+    # CMake emits UTF-8 diagnostics; Windows' locale may default to CP1252.
+    result = subprocess.run(args, cwd=cwd, text=True, encoding="utf-8", errors="replace",
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if ok and result.returncode:
         raise AssertionError(result.stdout)
     return result
@@ -41,7 +42,9 @@ class DependenciesTest(unittest.TestCase):
 
     def configure(self, build="build", *options, declaration=None, ok=True):
         if declaration is None:
-            declaration = (f'add_dependency(probe URL "{self.archive.as_uri()}" '
+            # ExternalProject strips file://, leaving an invalid /C:/ path on Windows.
+            # Git and file(DOWNLOAD) below consume real URIs and keep as_uri().
+            declaration = (f'add_dependency(probe URL "{self.archive.as_posix()}" '
                            f'URL_HASH SHA256={self.digest})')
         (self.root / "CMakeLists.txt").write_text(
             'cmake_minimum_required(VERSION 3.25)\n'
@@ -98,9 +101,9 @@ class DependenciesTest(unittest.TestCase):
         declarations = [
             'GIT_REPOSITORY https://example.invalid/repo',
             'GIT_REPOSITORY https://example.invalid/repo GIT_TAG main',
-            f'URL "{self.archive.as_uri()}"',
-            f'URL "{self.archive.as_uri()}" URL_HASH SHA256=invalid',
-            f'URL "{self.archive.as_uri()}" URL_HASH SHA256={self.digest} TYPO',
+            f'URL "{self.archive.as_posix()}"',
+            f'URL "{self.archive.as_posix()}" URL_HASH SHA256=invalid',
+            f'URL "{self.archive.as_posix()}" URL_HASH SHA256={self.digest} TYPO',
         ]
         # Local overrides prevent a buggy implementation from accessing the network.
         for index, declaration in enumerate(declarations):
@@ -125,7 +128,7 @@ class DependenciesTest(unittest.TestCase):
         self.configure("offline", "-DDEPS_OFFLINE=ON", declaration=declaration)
 
     def test_dependency_options_do_not_leak_into_parent(self):
-        declaration = (f'add_dependency(probe URL "{self.archive.as_uri()}" '
+        declaration = (f'add_dependency(probe URL "{self.archive.as_posix()}" '
                        f'URL_HASH SHA256={self.digest} CMAKE_ARGS -DMODE=child)')
         self.configure(declaration=declaration)
         self.assertEqual((self.root / "build/observed.txt").read_text(), "child\n")
@@ -134,7 +137,7 @@ class DependenciesTest(unittest.TestCase):
     def test_header_only_never_executes_upstream_cmake(self):
         (self.source / "CMakeLists.txt").write_text('message(FATAL_ERROR "must not execute")\n')
         self.pack()
-        self.configure(declaration=(f'add_header_dependency(probe URL "{self.archive.as_uri()}" '
+        self.configure(declaration=(f'add_header_dependency(probe URL "{self.archive.as_posix()}" '
                                     f'URL_HASH SHA256={self.digest})'))
 
     def test_binary_cache_survives_failed_pin_update(self):
@@ -186,7 +189,7 @@ class DependenciesTest(unittest.TestCase):
             manifest.write_text(f'{function}(probe GIT_REPOSITORY invalid GIT_TAG main)\n')
             result = run("cmake", f"-DDEPS_MANIFEST={manifest}", "-P", str(checker), ok=False)
             self.assertNotEqual(result.returncode, 0, result.stdout)
-            manifest.write_text(f'{function}(\n probe\n URL\n "{self.archive.as_uri()}"\n'
+            manifest.write_text(f'{function}(\n probe\n URL\n "{self.archive.as_posix()}"\n'
                                 f' URL_HASH\n "SHA256={self.digest}"\n)\n')
             run("cmake", f"-DDEPS_MANIFEST={manifest}", "-P", str(checker))
 

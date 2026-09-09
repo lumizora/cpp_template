@@ -4,3 +4,4 @@ build/
 CMakeUserPresets.json
 *.local/
 node_modules/
+*.log
